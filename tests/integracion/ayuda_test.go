@@ -68,6 +68,11 @@ func (e *entorno) purgar(t *testing.T) {
 	time.Sleep(time.Second) // PurgeQueue es asíncrono
 }
 
+// fechaUnica devuelve una "fecha" lógica distinta por corrida para que el
+// MessageDeduplicationId (id-fecha) no colisione con corridas anteriores
+// dentro de la ventana de 5 minutos de SQS FIFO.
+func fechaUnica() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000") }
+
 func esperar(t *testing.T, plazo time.Duration, cond func() bool) {
 	t.Helper()
 	limite := time.Now().Add(plazo)

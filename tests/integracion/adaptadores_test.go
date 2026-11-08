@@ -15,9 +15,10 @@ import (
 func TestSQSIdaYVuelta(t *testing.T) {
 	e := armarEntorno(t)
 	ctx := context.Background()
+	fecha := fechaUnica()
 	msgs := []dominio.Mensaje{
-		{RegistroID: 1, Proveedor: "a", Endpoint: "/x", Body: []byte(`{}`), Fecha: "2026-11-08"},
-		{RegistroID: 2, Proveedor: "a", Endpoint: "/x", Body: []byte(`{}`), Fecha: "2026-11-08"},
+		{RegistroID: 1, Proveedor: "a", Endpoint: "/x", Body: []byte(`{}`), Fecha: fecha},
+		{RegistroID: 2, Proveedor: "a", Endpoint: "/x", Body: []byte(`{}`), Fecha: fecha},
 	}
 	if err := e.Cola.Enviar(ctx, msgs); err != nil {
 		t.Fatal(err)
@@ -46,7 +47,7 @@ func TestSQSIdaYVuelta(t *testing.T) {
 func TestDynamoEscrituraCondicional(t *testing.T) {
 	e := armarEntorno(t)
 	ctx := context.Background()
-	r := dominio.Resultado{RegistroID: time.Now().UnixNano(), Fecha: "2026-11-08", Proveedor: "a",
+	r := dominio.Resultado{RegistroID: time.Now().UnixNano(), Fecha: fechaUnica(), Proveedor: "a",
 		Estado: dominio.EstadoOK, HTTPStatus: 200, Intentos: 1, Respuesta: []byte(`{}`), ProcesadoEn: time.Now()}
 	if err := e.Resultados.Guardar(ctx, r); err != nil {
 		t.Fatal(err)
