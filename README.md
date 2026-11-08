@@ -4,7 +4,7 @@ Prueba de concepto en Go del diseño descrito en [docs/specs/2026-11-08-consulta
 
 ## 1. Qué es
 
-Hay una tabla con N registros (`id, proveedor, endpoint, body`), hoy un millón y con crecimiento esperado de N veces. Cada registro es una consulta que hay que hacer una vez por día a una API interna (API Gateway que ejecuta dos Lambdas), repartiendo la carga a lo largo del día, guardando el resultado, distinguiendo errores reintentables de los que no lo son y sin hacer nunca dos requests simultáneos al mismo proveedor. Todo en AWS, en una sola cuenta y región.
+Hay una tabla con N registros (`id, proveedor, endpoint, body`), hoy un millón y puede crecer N veces. Cada registro es una consulta que hay que hacer una vez por día a una API interna (API Gateway que ejecuta dos Lambdas), repartiendo la carga a lo largo del día, guardando el resultado, distinguiendo errores reintentables de los que no lo son y sin hacer nunca dos requests simultáneos al mismo proveedor. Todo en AWS, en una sola cuenta y región.
 
 La respuesta en una frase: **una cola SQS FIFO con `MessageGroupId = proveedor` garantiza la serialización por proveedor, un scheduler que corre cada 5 minutos publica la franja del día que corresponde, y workers en Fargate consumen la cola, llaman a la API y guardan el resultado en DynamoDB.** El requisito de no concurrencia convierte el problema en una cola independiente por proveedor con un único consumidor; el resto del diseño se ordena alrededor de eso.
 
@@ -130,7 +130,7 @@ Decisiones tomadas al construir la POC que la spec no fija:
 - **Un 2xx con body vacío o que no es JSON es `fallo_definitivo`.** Se asume que la API siempre responde JSON; volver a preguntar no cambiaría el body y bloquearía al proveedor.
 - **La política de medianoche está implementada en el scheduler** (lee `proveedores_estado.pendientes_ayer`), pero en la POC nadie actualiza esa tabla porque el job nocturno quedó fuera de alcance. Está cubierta por tests unitarios con fakes.
 - **Datos de la demo.** El seed genera 100.000 registros sobre 200 proveedores con una distribución Zipf de exponente 1,1. El proveedor más grande concentra alrededor de 21.000 registros, unos 73 por franja.
-- **Latencia del mock en la demo comprimida.** Con `ESCALA_TIEMPO=150` una franja dura 2 s. Si el mock mantuviera su latencia real, el proveedor más grande (~73 mensajes por franja) quedaría saturado por la compresión y no por el diseño. Por eso `deploy/demo.env` baja la latencia del mock a ~2 ms, el equivalente de ~300 ms reales divididos por la escala. El informe sigue calculando la saturación con K × L / 86400.
+- **Latencia del mock en la demo comprimida.** Con `ESCALA_TIEMPO=150` una franja dura 2 s. Si el mock mantuviera su latencia real, el proveedor más grande (~73 mensajes por franja) quedaría saturado por la compresión y no por el diseño. Por eso `deploy/demo.env` baja la latencia del mock a ~2 ms, el equivalente de ~300 ms reales divididos por la escala. El informe compensa la compresión: calcula la saturación como K × L × escala / 86400, que con L medida en el día comprimido equivale a K × L_real / 86400.
 - **Fecha lógica única por corrida en los tests de integración** (`fechaUnica()`). Los ids de deduplicación de SQS FIFO sobreviven a un `PurgeQueue` durante 5 minutos; con una fecha fija, una segunda corrida dentro de esa ventana perdería mensajes en silencio.
 
 ## 4. El límite que no se puede diseñar
@@ -145,7 +145,7 @@ Si `saturacion_P < 1`, el proveedor termina en el día: en cada franja recibe K_
 
 Lo que el diseño sí puede hacer es medirlo y decirlo a tiempo. El sistema publica `saturacion_P` con la latencia observada el día anterior y alarma por encima de 0,8. Esa alarma es la conversación con el dueño del proveedor: o se negocia un límite de concurrencia mayor a 1 (que SQS FIFO soporta con `MessageGroupId = proveedor#shard`), o se reducen sus registros, o se acepta que no termina en el día.
 
-La **política de medianoche** evita que un proveedor saturado acumule deuda sin límite. Si al cambiar el día un proveedor todavía tiene mensajes pendientes del día anterior, el scheduler no encola sus registros nuevos y lo marca como atrasado en `proveedores_estado`; la corrida del día anterior termina primero. La alternativa, encolar igual y dejar que la deuda se drene, es más simple, pero con un proveedor saturado no converge nunca y además mezcla resultados de días distintos. El costo de la política es explícito: un proveedor atrasado pierde un día de consultas en lugar de arrastrar un retraso creciente.
+La **política de medianoche** evita que un proveedor saturado acumule deuda sin límite. Si al cambiar el día un proveedor todavía tiene mensajes pendientes del día anterior, el scheduler no encola sus registros nuevos; la corrida del día anterior termina primero. En producción el que marca al proveedor como atrasado (`pendientes_ayer` en `proveedores_estado`) es el job nocturno; el scheduler sólo lee `pendientes_ayer`. La alternativa, encolar igual y dejar que la deuda se drene, es más simple, pero con un proveedor saturado no converge nunca y además mezcla resultados de días distintos. El costo de la política es explícito: un proveedor atrasado pierde un día de consultas en lugar de arrastrar un retraso creciente.
 
 ## 5. Cómo correr la POC
 
@@ -162,7 +162,7 @@ make down              # baja todo y borra los volúmenes
 
 `make test` no necesita Docker. `make test-integration` levanta la infraestructura si no está arriba y corre siete pruebas: ida y vuelta por SQS, escritura condicional en DynamoDB, idempotencia de la franja en Postgres, serialización (dos proveedores, 20 mensajes cada uno, 5 workers con concurrencia 4, sin ninguna violación en el mock), reintento exitoso, fallo no reintentable en una sola pasada y agotamiento hacia la DLQ. La prueba de DLQ tarda hasta ~90 s porque la cola usa el visibility timeout de producción, 60 s.
 
-El mock lleva un contador de requests en vuelo por proveedor y responde 409 si alguna vez ve dos simultáneos del mismo proveedor. `GET localhost:8080/stats` devuelve `max_en_vuelo` por proveedor, `violaciones` y `requests`. Lo que hay que ver después de cualquier corrida es `violaciones: 0` y ningún proveedor con `max_en_vuelo` mayor a 1: es la verificación empírica de la invariante central, no un argumento.
+El mock lleva un contador de requests en vuelo por proveedor y responde 409 si alguna vez ve dos simultáneos del mismo proveedor. `GET localhost:8080/stats` devuelve `violaciones`, `requests`, `max_en_vuelo_global` (requests simultáneos sumando todos los proveedores) y `max_en_vuelo` por proveedor; `make informe` lo resume. Lo que hay que ver después de cualquier corrida es `violaciones: 0` y ningún proveedor con `max_en_vuelo` mayor a 1: es la verificación empírica de la invariante central, no un argumento.
 
 `make demo` carga el seed, calcula los slots con la misma consulta SQL de la spec y arranca el scheduler con `ESCALA_TIEMPO=150` (una franja de 5 minutos dura 2 s, el día completo ~10 minutos) y 10 réplicas del worker. El mock inyecta errores con las probabilidades de `deploy/demo.env` (500, 503, 429 y 400) para ejercitar reintentos y fallos definitivos. Con `make logs` se ven las franjas encolándose y los workers procesando.
 
@@ -189,9 +189,9 @@ make down && make demo
 make informe
 ```
 
-`make informe` recorre la tabla `resultados` de DynamoDB e imprime la cantidad de resultados por estado (`ok`, `fallo_definitivo`, `agotado`), la latencia p50 y p95, los cinco proveedores con mayor saturación estimada con su K, su L efectiva (latencia por intentos) y K × L / 86400, y los mensajes visibles y en vuelo de `consultas.fifo` y `consultas-dlq.fifo`. Al final muestra la salida de `GET /stats` del mock, con `violaciones` y el máximo en vuelo por proveedor.
+`make informe` trabaja sobre un único día lógico: el de la variable `FECHA` o, si no se pasa, la fecha más vieja que haya en la tabla `resultados` de DynamoDB, que imprime al principio. Muestra la cantidad de resultados por estado (`ok`, `fallo_definitivo`, `agotado`) y la latencia p50 y p95 medidas. Después, por proveedor: K (registros activos según Postgres, no según los resultados, que subestimarían justo a los que no terminan), resultados, pendientes (K − resultados), L efectiva (latencia por intentos) y la saturación s = K × L × escala / 86400, marcando los que superan 0,8. Cierra con los mensajes visibles y en vuelo de `consultas.fifo` y `consultas-dlq.fifo`, y con las estadísticas del mock: `violaciones`, `requests`, máximo en vuelo sumando todos los proveedores, máximo en vuelo de un mismo proveedor y la lista de proveedores con máximo mayor a 1.
 
-Un detalle para leer la saturación: L es la latencia medida dentro del día comprimido, donde el mock responde en ~2 ms. Para obtener la saturación equivalente con latencia real hay que multiplicar el valor impreso por `ESCALA_TIEMPO` (150).
+Un detalle para leer la saturación: L es la latencia medida dentro del día comprimido, donde el mock responde en ~2 ms. El informe ya la lleva a tiempo real multiplicando por `ESCALA_TIEMPO`, que el target `make informe` fija en 150, la misma escala de la demo.
 
 La salida medida de la corrida queda registrada en `docs/demo-resultados.md`.
 

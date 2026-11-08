@@ -4,7 +4,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -74,25 +76,30 @@ func main() {
 			return
 		}
 		defer g.salir(proveedor)
+		// Leer el body completo hace que el servidor empiece a vigilar la
+		// conexión: recién entonces r.Context() se cancela si el cliente corta.
+		_, _ = io.Copy(io.Discard, r.Body)
 
-		// Simula las dos Lambdas: dos tramos de latencia.
-		time.Sleep(latencia(cfg) / 2)
-		time.Sleep(latencia(cfg) / 2)
+		// Simula las dos Lambdas: dos tramos de latencia. Si el cliente corta,
+		// se abandona el request para no retener el lugar del proveedor.
+		if !dormir(r.Context(), latencia(cfg)/2) || !dormir(r.Context(), latencia(cfg)/2) {
+			return
+		}
 
 		// X-Forzar-Secuencia responde una secuencia de códigos por proveedor.
 		if seq := r.Header.Get("X-Forzar-Secuencia"); seq != "" {
 			if code, ok := g.siguienteForzado(proveedor, seq); ok {
-				responder(w, code, cfg)
+				responder(r.Context(), w, code)
 				return
 			}
 		}
 
 		// Cabecera X-Forzar permite a los tests pedir un código concreto.
 		if forzado := r.Header.Get("X-Forzar"); forzado != "" {
-			responder(w, forzado, cfg)
+			responder(r.Context(), w, forzado)
 			return
 		}
-		responder(w, sortear(cfg), cfg)
+		responder(r.Context(), w, sortear(cfg))
 	})
 
 	slog.Info("api-mock escuchando", "puerto", cfg.puerto, "limite", cfg.limite)
@@ -124,11 +131,27 @@ func sortear(cfg config) string {
 	return "200"
 }
 
-func responder(w http.ResponseWriter, code string, _ config) {
+// dormir espera d o hasta que el cliente cancele; devuelve false si canceló.
+func dormir(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func responder(ctx context.Context, w http.ResponseWriter, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	switch strings.ToLower(code) {
 	case "timeout":
-		time.Sleep(35 * time.Second) // mayor al timeout del cliente (30 s)
+		// Mayor al timeout del cliente (30 s): en la práctica el cliente corta
+		// antes y el request termina con él.
+		if !dormir(ctx, 35*time.Second) {
+			return
+		}
 		w.WriteHeader(http.StatusGatewayTimeout)
 	case "200":
 		w.WriteHeader(http.StatusOK)

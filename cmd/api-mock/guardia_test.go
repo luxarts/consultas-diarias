@@ -43,7 +43,7 @@ func TestGuardiaPermiteHastaElLimite(t *testing.T) {
 		t.Fatal("tras salir debía volver a pasar")
 	}
 	s := g.stats()
-	if s.Violaciones != 1 || s.MaxEnVuelo["a"] != 1 || s.MaxEnVuelo["b"] != 1 {
+	if s.Violaciones != 1 || s.MaxEnVuelo["a"] != 1 || s.MaxEnVuelo["b"] != 1 || s.MaxEnVueloGlobal != 2 || s.Requests != 4 {
 		t.Fatalf("stats inesperadas: %+v", s)
 	}
 }
