@@ -16,8 +16,8 @@ import (
 // es necesario porque SQS sí devuelve varios mensajes del mismo grupo en un
 // mismo receive, y procesarlos en paralelo violaría la invariante.
 //
-// Al cancelar el contexto cada goroutine deja de recibir, termina el mensaje
-// que tenga en vuelo y sale; Correr vuelve cuando terminaron todas.
+// Al cancelar el contexto cada goroutine termina el poll y el mensaje que
+// tenga en vuelo y sale; Correr vuelve cuando terminaron todas.
 func Correr(ctx context.Context, p *Procesador, concurrencia int) {
 	if concurrencia < 1 {
 		concurrencia = 1
@@ -34,13 +34,16 @@ func Correr(ctx context.Context, p *Procesador, concurrencia int) {
 }
 
 // consumir recibe y procesa de a un mensaje hasta que se cancele el contexto.
+//
+// El receive no se cancela con el contexto: si se corta la conexión en medio
+// del long polling, SQS puede haber asignado ya un mensaje a ese pedido y
+// queda invisible hasta que venza el visibility timeout, con el proveedor
+// bloqueado 60 s. Al apagar, cada goroutine termina el poll en curso (a lo
+// sumo 20 s), procesa lo que haya llegado y recién entonces sale.
 func consumir(ctx context.Context, p *Procesador) {
 	for ctx.Err() == nil {
-		msgs, err := p.Cola.Recibir(ctx, 1)
+		msgs, err := p.Cola.Recibir(context.WithoutCancel(ctx), 1)
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
 			slog.Error("recibir", "err", err)
 			dormir(ctx, time.Second)
 			continue

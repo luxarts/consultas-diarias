@@ -22,10 +22,13 @@ import (
 type SQS struct {
 	cliente *sqs.Client
 	url     string
+	// Espera es el long polling de Recibir. 20 s en producción; las pruebas
+	// la acortan para que apagar un worker no demore tanto.
+	Espera time.Duration
 }
 
 func NuevaSQS(cliente *sqs.Client, url string) *SQS {
-	return &SQS{cliente: cliente, url: url}
+	return &SQS{cliente: cliente, url: url, Espera: 20 * time.Second}
 }
 
 func (s *SQS) Enviar(ctx context.Context, msgs []dominio.Mensaje) error {
@@ -59,10 +62,17 @@ func (s *SQS) Enviar(ctx context.Context, msgs []dominio.Mensaje) error {
 }
 
 func (s *SQS) Recibir(ctx context.Context, max int) ([]dominio.MensajeRecibido, error) {
+	espera := int32(s.Espera / time.Second)
+	if espera < 0 {
+		espera = 0
+	}
+	if espera > 20 {
+		espera = 20
+	}
 	out, err := s.cliente.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:                    aws.String(s.url),
 		MaxNumberOfMessages:         int32(min(max, 10)),
-		WaitTimeSeconds:             20,
+		WaitTimeSeconds:             espera,
 		MessageSystemAttributeNames: []types.MessageSystemAttributeName{types.MessageSystemAttributeNameApproximateReceiveCount},
 	})
 	if err != nil {

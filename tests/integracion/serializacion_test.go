@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,11 +54,15 @@ func TestNuncaDosRequestsAlMismoProveedor(t *testing.T) {
 	}
 
 	antes := leerStats(t, e.APIBase)
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		p := &worker.Procesador{Cola: e.Cola, Resultados: e.Resultados,
 			API: apiclient.NuevoHTTP(e.APIBase, dominio.TimeoutHTTP), Ahora: time.Now, Rnd: rand.Float64, Escala: 1}
-		go worker.Correr(ctx, p, 4)
+		wg.Add(1)
+		go func() { defer wg.Done(); worker.Correr(ctx, p, 4) }()
 	}
+	// Se espera a que los workers salgan del todo antes de leer y de terminar.
+	t.Cleanup(wg.Wait)
 
 	esperar(t, 60*time.Second, func() bool {
 		_, ok1, _ := e.Resultados.Leer(ctx, 20, fecha)
@@ -65,6 +70,8 @@ func TestNuncaDosRequestsAlMismoProveedor(t *testing.T) {
 		return ok1 && ok2
 	})
 	cancel()
+	wg.Wait()
+	ctx = context.Background()
 
 	despues := leerStats(t, e.APIBase)
 	if despues.Violaciones != antes.Violaciones {

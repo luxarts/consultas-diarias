@@ -13,10 +13,17 @@ import (
 	"consultas-diarias/internal/worker"
 )
 
-func lanzarWorker(ctx context.Context, e *entorno, escala float64) {
+// lanzarWorker corre un worker hasta que termine el test y espera a que
+// salga del todo: un poll abandonado a medias podría recibir el mensaje del
+// test siguiente y dejarlo invisible 60 s.
+func lanzarWorker(t *testing.T, e *entorno, escala float64) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
 	p := &worker.Procesador{Cola: e.Cola, Resultados: e.Resultados,
 		API: apiclient.NuevoHTTP(e.APIBase, dominio.TimeoutHTTP), Ahora: time.Now, Rnd: rand.Float64, Escala: escala}
-	go worker.Correr(ctx, p, 2)
+	listo := make(chan struct{})
+	go func() { defer close(listo); worker.Correr(ctx, p, 2) }()
+	t.Cleanup(func() { cancel(); <-listo })
 }
 
 func enviarUno(t *testing.T, e *entorno, id int64, proveedor, secuencia, fecha string) {
@@ -32,11 +39,10 @@ func enviarUno(t *testing.T, e *entorno, id int64, proveedor, secuencia, fecha s
 // Escala 600: el backoff de 30 s pasa a 50 ms, el de 2 min a 200 ms.
 func TestReintentoExitoso(t *testing.T) {
 	e := armarEntorno(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	fecha := fechaUnica()
 	enviarUno(t, e, 101, "reint-ok-"+fecha, "503,500,200", fecha)
-	lanzarWorker(ctx, e, 600)
+	lanzarWorker(t, e, 600)
 	esperar(t, 30*time.Second, func() bool {
 		_, ok, _ := e.Resultados.Leer(ctx, 101, fecha)
 		return ok
@@ -49,11 +55,10 @@ func TestReintentoExitoso(t *testing.T) {
 
 func TestNoReintentableEnUnaPasada(t *testing.T) {
 	e := armarEntorno(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	fecha := fechaUnica()
 	enviarUno(t, e, 102, "fallo-400-"+fecha, "400", fecha)
-	lanzarWorker(ctx, e, 600)
+	lanzarWorker(t, e, 600)
 	esperar(t, 30*time.Second, func() bool {
 		_, ok, _ := e.Resultados.Leer(ctx, 102, fecha)
 		return ok
@@ -66,8 +71,7 @@ func TestNoReintentableEnUnaPasada(t *testing.T) {
 
 func TestAgotadoTerminaEnDLQ(t *testing.T) {
 	e := armarEntorno(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	fecha := fechaUnica()
 	// El conteo inicial hace la prueba repetible aunque la DLQ no esté vacía.
 	inicial := e.mensajesVisibles(ctx, e.DLQURL)
@@ -75,7 +79,7 @@ func TestAgotadoTerminaEnDLQ(t *testing.T) {
 		t.Fatal("no se pudo leer la DLQ")
 	}
 	enviarUno(t, e, 103, "siempre-503-"+fecha, "503,503,503,503,503,503", fecha)
-	lanzarWorker(ctx, e, 600)
+	lanzarWorker(t, e, 600)
 	esperar(t, 60*time.Second, func() bool {
 		r, ok, _ := e.Resultados.Leer(ctx, 103, fecha)
 		return ok && r.Estado == dominio.EstadoAgotado

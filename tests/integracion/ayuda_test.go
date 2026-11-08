@@ -46,8 +46,10 @@ func armarEntorno(t *testing.T) *entorno {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	colaSQS := cola.NuevaSQS(sq, base+"consultas.fifo")
+	colaSQS.Espera = time.Second // apagar un worker no debe demorar 20 s
 	e := &entorno{
-		Cola:       cola.NuevaSQS(sq, base+"consultas.fifo"),
+		Cola:       colaSQS,
 		Resultados: resultados.NuevaDynamo(dynamodb.NewFromConfig(cfg), "resultados"),
 		Fuente:     fuente.NuevaPostgres(pool),
 		Pool:       pool,
