@@ -53,7 +53,9 @@ func main() {
 	for i, n := range reparto {
 		prov := fmt.Sprintf("proveedor-%03d", i)
 		for j := 0; j < n; j++ {
-			filas = append(filas, []any{prov, "/consulta", fmt.Sprintf(`{"cuenta":"%s-%d"}`, prov, j)})
+			// []byte y no string: pgx manda bytes a jsonb sin ambigüedad en COPY.
+			body := []byte(fmt.Sprintf(`{"cuenta":"%s-%d"}`, prov, j))
+			filas = append(filas, []any{prov, "/consulta", body})
 		}
 	}
 
@@ -74,6 +76,9 @@ func main() {
 
 	var maxProv string
 	var maxN int
-	_ = pool.QueryRow(ctx, `SELECT proveedor, count(*) FROM registros GROUP BY 1 ORDER BY 2 DESC LIMIT 1`).Scan(&maxProv, &maxN)
+	if err := pool.QueryRow(ctx, `SELECT proveedor, count(*) FROM registros GROUP BY 1 ORDER BY 2 DESC LIMIT 1`).Scan(&maxProv, &maxN); err != nil {
+		slog.Error("proveedor más cargado", "err", err)
+		return
+	}
 	slog.Info("proveedor más cargado", "proveedor", maxProv, "registros", maxN, "por_franja", maxN/288)
 }

@@ -1,3 +1,5 @@
+name: consultas
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,7 +16,7 @@ services:
       retries: 30
 
   localstack:
-    image: localstack/localstack:3
+    image: localstack/localstack:3.8.1
     environment:
       SERVICES: sqs,dynamodb
       DEBUG: 0
@@ -22,7 +24,9 @@ services:
     volumes:
       - ./localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name consultas.fifo"]
+      # La tabla es el último recurso que crea el script de init: si existe,
+      # las colas también.
+      test: ["CMD-SHELL", "awslocal dynamodb describe-table --table-name resultados"]
       interval: 3s
       retries: 30
 
@@ -44,6 +48,8 @@ services:
   worker:
     build: { context: .., dockerfile: deploy/Dockerfile }
     command: worker
+    # Apagado ordenado: el worker termina el mensaje en vuelo (hasta 45 s).
+    stop_grace_period: 60s
     environment: &aws
       AWS_ENDPOINT_URL: http://localstack:4566
       AWS_REGION: us-east-1
