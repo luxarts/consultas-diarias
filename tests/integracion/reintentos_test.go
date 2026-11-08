@@ -39,7 +39,7 @@ func TestReintentoExitoso(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fecha := fechaUnica()
-	enviarUno(t, e, 101, "reint-ok", "503,500,200", fecha)
+	enviarUno(t, e, 101, "reint-ok-"+fecha, "503,500,200", fecha)
 	lanzarWorker(ctx, e, 600)
 	esperar(t, 30*time.Second, func() bool {
 		_, ok, _ := e.Resultados.Leer(ctx, 101, fecha)
@@ -56,7 +56,7 @@ func TestNoReintentableEnUnaPasada(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fecha := fechaUnica()
-	enviarUno(t, e, 102, "fallo-400", "400", fecha)
+	enviarUno(t, e, 102, "fallo-400-"+fecha, "400", fecha)
 	lanzarWorker(ctx, e, 600)
 	esperar(t, 30*time.Second, func() bool {
 		_, ok, _ := e.Resultados.Leer(ctx, 102, fecha)
@@ -73,7 +73,7 @@ func TestAgotadoTerminaEnDLQ(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fecha := fechaUnica()
-	enviarUno(t, e, 103, "siempre-503", "503,503,503,503,503,503", fecha)
+	enviarUno(t, e, 103, "siempre-503-"+fecha, "503,503,503,503,503,503", fecha)
 	lanzarWorker(ctx, e, 600)
 	esperar(t, 60*time.Second, func() bool {
 		r, ok, _ := e.Resultados.Leer(ctx, 103, fecha)
