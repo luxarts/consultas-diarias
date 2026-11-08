@@ -79,6 +79,14 @@ func main() {
 		time.Sleep(latencia(cfg) / 2)
 		time.Sleep(latencia(cfg) / 2)
 
+		// X-Forzar-Secuencia responde una secuencia de códigos por proveedor.
+		if seq := r.Header.Get("X-Forzar-Secuencia"); seq != "" {
+			if code, ok := g.siguienteForzado(proveedor, seq); ok {
+				responder(w, code, cfg)
+				return
+			}
+		}
+
 		// Cabecera X-Forzar permite a los tests pedir un código concreto.
 		if forzado := r.Header.Get("X-Forzar"); forzado != "" {
 			responder(w, forzado, cfg)

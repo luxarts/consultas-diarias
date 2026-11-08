@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestGuardiaSecuenciaForzada(t *testing.T) {
+	g := nuevaGuardia(1)
+	got := []string{}
+	for i := 0; i < 4; i++ {
+		code, ok := g.siguienteForzado("p", "503, 500,200")
+		if !ok {
+			got = append(got, "agotada")
+			continue
+		}
+		got = append(got, code)
+	}
+	quiero := []string{"503", "500", "200", "agotada"}
+	for i := range quiero {
+		if got[i] != quiero[i] {
+			t.Fatalf("secuencia = %v, quiero %v", got, quiero)
+		}
+	}
+	if code, ok := g.siguienteForzado("otro", "429"); !ok || code != "429" {
+		t.Fatalf("otro proveedor debía tener su propia secuencia: %q %v", code, ok)
+	}
+}
+
 func TestGuardiaPermiteHastaElLimite(t *testing.T) {
 	g := nuevaGuardia(1)
 	if !g.entrar("a") {

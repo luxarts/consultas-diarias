@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // guardia cuenta requests en vuelo por proveedor y registra el máximo
 // observado. Es la aserción empírica de "no concurrencia por proveedor".
@@ -11,6 +14,7 @@ type guardia struct {
 	maxEnVuelo  map[string]int
 	violaciones int
 	requests    int
+	secuencias  map[string][]string
 }
 
 type estadisticas struct {
@@ -42,6 +46,25 @@ func (g *guardia) salir(proveedor string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.enVuelo[proveedor]--
+}
+
+// siguienteForzado devuelve el próximo código de la secuencia del proveedor.
+// La primera llamada fija la secuencia; al agotarse devuelve false.
+func (g *guardia) siguienteForzado(proveedor, secuencia string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.secuencias == nil {
+		g.secuencias = map[string][]string{}
+	}
+	if _, ok := g.secuencias[proveedor]; !ok {
+		g.secuencias[proveedor] = strings.Split(secuencia, ",")
+	}
+	cola := g.secuencias[proveedor]
+	if len(cola) == 0 {
+		return "", false
+	}
+	g.secuencias[proveedor] = cola[1:]
+	return strings.TrimSpace(cola[0]), true
 }
 
 func (g *guardia) stats() estadisticas {

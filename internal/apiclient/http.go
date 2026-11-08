@@ -3,6 +3,7 @@ package apiclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -29,6 +30,14 @@ func (h *HTTP) Consultar(ctx context.Context, proveedor, endpoint string, body [
 		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Gancho de prueba: si el body trae "_forzar_secuencia", se propaga como
+	// cabecera X-Forzar-Secuencia al api-mock. La API real lo ignora.
+	var sonda struct {
+		Secuencia string `json:"_forzar_secuencia"`
+	}
+	if json.Unmarshal(body, &sonda) == nil && sonda.Secuencia != "" {
+		req.Header.Set("X-Forzar-Secuencia", sonda.Secuencia)
+	}
 	resp, err := h.cliente.Do(req)
 	if err != nil {
 		return 0, nil, err
