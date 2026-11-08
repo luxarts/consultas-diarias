@@ -199,7 +199,7 @@ El sistema publica `saturacion_P` como métrica por proveedor usando la latencia
 
 ### 5.4 Política de medianoche
 
-Si al cambiar el día un proveedor todavía tiene mensajes pendientes del día anterior, el scheduler **no encola los registros nuevos de ese proveedor** y lo marca como atrasado en `proveedores_estado`. La corrida del día anterior termina primero. Esto evita que un proveedor saturado acumule deuda infinita y que los resultados de días distintos se mezclen.
+Si al cambiar el día un proveedor todavía tiene mensajes pendientes del día anterior, el scheduler **no encola los registros nuevos de ese proveedor**. Quien lo marca como atrasado (`pendientes_ayer` en `proveedores_estado`) es el job nocturno; el scheduler sólo lee esa marca. La corrida del día anterior termina primero. Esto evita que un proveedor saturado acumule deuda infinita y que los resultados de días distintos se mezclen.
 
 Alternativa descartada: encolar igual y dejar que la deuda se drene. Es más simple, pero si el proveedor está saturado no converge nunca y la cola crece sin límite.
 
