@@ -10,6 +10,7 @@ import (
 	"consultas-diarias/internal/apiclient"
 	"consultas-diarias/internal/cola"
 	"consultas-diarias/internal/dominio"
+	"consultas-diarias/internal/metricas"
 	"consultas-diarias/internal/resultados"
 )
 
@@ -21,17 +22,24 @@ type Procesador struct {
 	Ahora      func() time.Time
 	Rnd        func() float64
 	Escala     float64
+	Metricas   *metricas.Metricas // opcional; nil no registra nada
 }
 
 // Procesar nunca deja un mensaje en limbo: lo borra, lo reprograma con
 // backoff o, al agotar intentos, lo devuelve con visibilidad 0 para que SQS
 // lo mueva a la DLQ en la siguiente recepción.
 func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) error {
+	p.Metricas.Entrar(ctx)
+	defer p.Metricas.Salir(ctx)
+
 	inicio := p.Ahora()
 	ctxAPI, cancel := context.WithTimeout(ctx, dominio.TimeoutHTTP)
 	defer cancel()
 	status, body, err := p.API.Consultar(ctxAPI, m.Proveedor, m.Endpoint, m.Body)
 	fin := p.Ahora()
+	// El destino del mensaje se conoce recién al final de cada rama.
+	estado := "reintento"
+	defer func() { p.Metricas.Consulta(ctx, m.Proveedor, status, estado, fin.Sub(inicio)) }()
 
 	res := dominio.Resultado{
 		RegistroID:  m.RegistroID,
@@ -47,11 +55,13 @@ func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) er
 	case dominio.Exito:
 		res.Estado = dominio.EstadoOK
 		res.Respuesta = body
+		estado = res.Estado
 		return p.cerrar(ctx, m, res)
 
 	case dominio.NoReintentable:
 		res.Estado = dominio.EstadoFalloDefinitivo
 		res.Error = describir(status, body, err)
+		estado = res.Estado
 		return p.cerrar(ctx, m, res)
 
 	default: // Reintentable
@@ -59,6 +69,7 @@ func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) er
 		if !reintentar {
 			res.Estado = dominio.EstadoAgotado
 			res.Error = describir(status, body, err)
+			estado = res.Estado
 			if err := p.guardar(ctx, m, res); err != nil {
 				return err
 			}
