@@ -414,6 +414,8 @@ Menos de mil consultas por día sobre una tabla que cabe en memoria. Sin concurr
 - `franjas_encoladas`, `registros_encolados` por franja.
 - `proveedores_atrasados` (con pendientes del día anterior).
 
+**Cómo se emiten.** El worker instrumenta cada intento con OpenTelemetry (contador de requests por proveedor y código HTTP, contador de destino del mensaje por estado, histograma de latencia por proveedor, mensajes en vuelo) y las empuja por OTLP a un colector. El worker no expone puertos ni sabe cuántas réplicas hay: escalar el servicio de 1 a N tareas no toca nada de la observabilidad, igual que con un agente Datadog. En Fargate el colector es ADOT (AWS Distro for OpenTelemetry) como sidecar de la tarea, con el exportador de CloudWatch EMF, de modo que las métricas aparecen en CloudWatch con la dimensión `proveedor` y las alarmas de abajo se definen sobre ellas. En la POC el mismo colector exporta a Prometheus y un Grafana provisionado muestra el tablero (ver README).
+
 **Métricas nativas.** `ApproximateNumberOfMessagesVisible`, `ApproximateAgeOfOldestMessage`, mensajes en DLQ, tareas Fargate activas, errores e invocaciones de la Lambda scheduler.
 
 **Alarmas.**

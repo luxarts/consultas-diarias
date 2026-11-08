@@ -154,6 +154,7 @@ Requisitos: Docker Desktop con Compose v2 y Go 1.26. Todo corre localmente: Post
 
 ```bash
 make infra             # levanta postgres, localstack y api-mock y espera a que estén listos
+make up                # levanta todo, incluidos un worker, el scheduler y el tablero en localhost:3000
 make test              # unitarios, sin I/O: clasificación, backoff, slots, scheduler y worker con fakes
 make test-integration  # contra el compose: adaptadores, serialización, reintentos, DLQ
 make demo              # día comprimido con 100.000 registros y 10 workers
@@ -167,6 +168,19 @@ El mock lleva un contador de requests en vuelo por proveedor y responde 409 si a
 
 `make demo` parte siempre de cero: baja el compose borrando volúmenes, reconstruye las imágenes, carga el seed, calcula los slots con la misma consulta SQL de la spec y arranca el scheduler con `ESCALA_TIEMPO=150` (una franja de 5 minutos dura 2 s, el día completo ~10 minutos) y 10 réplicas del worker; si un paso falla, no sigue. El scheduler publica las 288 franjas de un solo día lógico y termina con `día comprimido completo`. El mock inyecta errores con las probabilidades de `deploy/demo.env` (500, 503, 429 y 400) para ejercitar reintentos y fallos definitivos. Con `make logs` se ven las franjas encolándose y los workers procesando.
 
+### Tablero de métricas
+
+Con la infraestructura arriba, en [http://localhost:3000](http://localhost:3000) hay un Grafana sin login con el tablero **Consultas diarias**, que se actualiza cada 5 s:
+
+- **Requests por minuto**, sumando todos los workers.
+- **Top 10 proveedores por requests** en el rango de tiempo elegido.
+- **Respuestas por código HTTP**, apiladas; el código 0 es un error de transporte o timeout.
+- **Latencia promedio por proveedor** en los últimos 5 minutos, los 15 más lentos.
+- **Destino de los mensajes por minuto**: `ok`, `fallo_definitivo`, `reintento`, `agotado`.
+- **Mensajes en vuelo por worker**, una serie por réplica.
+
+El camino de las métricas es el mismo que con un agente Datadog, y es lo que haría en AWS. El worker las empuja por OTLP a un colector OpenTelemetry (`deploy/otel-collector.yaml`): no expone ningún puerto y no sabe cuántas réplicas hay, así que `docker compose up -d --scale worker=20 worker` o bajar a 1 no toca ninguna configuración; cada réplica aparece sola en el tablero por su `service_instance_id`. Prometheus scrapea únicamente al colector (`deploy/prometheus.yml`) y Grafana arranca provisionado desde archivos (`deploy/grafana/`): datasource y tablero, sin clics. Si el worker no encuentra la variable `OTEL_EXPORTER_OTLP_ENDPOINT`, arranca sin métricas y sigue funcionando igual.
+
 ## 6. Mapeo POC → producción
 
 | Producción | POC |
@@ -177,6 +191,7 @@ El mock lleva un contador de requests en vuelo por proveedor y responde 409 si a
 | EventBridge + Lambda scheduler | Contenedor `scheduler` con ticker interno que llama a la misma función |
 | ECS Fargate workers | Contenedor `worker`, escalable con `docker compose up --scale worker=N` |
 | API Gateway + 2 Lambdas | Contenedor `api-mock` en Go |
+| ADOT sidecar → CloudWatch (métricas con dimensión `proveedor`) y CloudWatch Dashboards o Amazon Managed Grafana | Colector OpenTelemetry → Prometheus → Grafana provisionado |
 
 Las interfaces `Cola`, `Fuente` y `Resultados` en `internal/` son el borde entre la lógica y AWS. Toda la lógica de negocio se prueba con fakes en memoria; los adaptadores reales se prueban contra LocalStack y Postgres.
 
