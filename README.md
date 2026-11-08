@@ -124,7 +124,8 @@ Decisiones tomadas al construir la POC que la spec no fija:
 
 - **El día del sistema es UTC.** Franja, fecha lógica y TTL se calculan en UTC; `SlotActual` normaliza sus entradas a UTC antes de calcular.
 - **Cada receive pide un mensaje.** Cada goroutine del worker hace `ReceiveMessage` con `MaxNumberOfMessages = 1` y long polling de 20 s. Pedir lotes ahorraría llamadas pero podría traer dos mensajes del mismo proveedor juntos. El costo es aproximadamente un `ReceiveMessage` por consulta: un millón de llamadas por día, despreciable frente al resto.
-- **Sin catch-up.** Si el proceso scheduler está caído durante una franja, esa franja no se publica después. Queda como fila ausente en `corridas_diarias`, que en producción es la alarma "franja perdida".
+- **Catch-up dentro del proceso; al arrancar no se recuperan franjas pasadas.** Si un tick se atrasa o publicar una franja tarda más que la franja, el tick siguiente publica todas las intermedias en orden; al cambiar la fecha completa el día anterior hasta la franja 287 y sigue desde la 0. Al arrancar publica sólo la franja actual: lo que pasó con el proceso caído queda como fila ausente en `corridas_diarias`, que en producción es la alarma "franja perdida".
+- **Fin del día comprimido.** Con `ESCALA_TIEMPO > 1` el scheduler publica las 288 franjas de un único día lógico, loguea `día comprimido completo` y termina. Así la demo no arranca un segundo día que se mezcle con el primero.
 - **Una franja cuyo `Enviar` falla queda en `encolando`** y el scheduler no la reintenta. La spec dice que una franja perdida se detecta por la *ausencia* de fila; eso sólo es cierto si el scheduler nunca la empezó. Es una limitación conocida de la POC: en producción haría falta reclamar las filas en `encolando` más viejas que una franja y volver a publicarlas, cosa que la deduplicación de SQS y la escritura condicional en DynamoDB hacen segura.
 - **Un 2xx con body vacío o que no es JSON es `fallo_definitivo`.** Se asume que la API siempre responde JSON; volver a preguntar no cambiaría el body y bloquearía al proveedor.
 - **La política de medianoche está implementada en el scheduler** (lee `proveedores_estado.pendientes_ayer`), pero en la POC nadie actualiza esa tabla porque el job nocturno quedó fuera de alcance. Está cubierta por tests unitarios con fakes.
@@ -207,7 +208,7 @@ Explícitamente no implementado en la POC, descrito en la spec con los valores p
 ### Qué haría distinto con más tiempo
 
 - **Reclamar franjas en `encolando`.** El scheduler debería buscar filas en `encolando` más viejas que una franja y volver a publicarlas. Es seguro gracias a la deduplicación de SQS y a la escritura condicional en DynamoDB, y cierra el hueco de una franja cuyo envío falló a mitad de camino.
-- **Catch-up de franjas perdidas.** Al arrancar, recorrer desde la última franja publicada del día hasta la actual y publicar las que falten, en lugar de depender sólo de la alarma.
+- **Catch-up de franjas perdidas al arrancar.** Dentro del proceso ya no se saltea ninguna franja, pero al arrancar sólo se publica la actual. Lo siguiente sería leer de `corridas_diarias` la última franja publicada del día y publicar las que falten, en lugar de depender sólo de la alarma.
 - **Mensajes venenosos en `Recibir`.** Un body que no deserializa hace fallar el receive. Como cada receive trae un solo mensaje, sólo afecta a ese mensaje: vuelve a la cola al vencer su visibility timeout, bloquea a su proveedor 60 s por intento y llega a la DLQ tras cinco recepciones. Lo correcto es mandarlo a la DLQ de inmediato, o guardarlo como `fallo_definitivo`, sin hacerle pagar esos cinco minutos a su proveedor.
 
 ## 9. Ciclo de vida y plan

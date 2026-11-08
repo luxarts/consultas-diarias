@@ -1,4 +1,4 @@
-// scheduler publica en la cola los registros de la franja actual.
+// scheduler publica en la cola los registros de cada franja del día.
 package main
 
 import (
@@ -49,20 +49,29 @@ func main() {
 	inicio := time.Now()
 	slog.Info("scheduler iniciado", "escala", escala, "franja", duracionFranja)
 
-	// Encola la franja actual de inmediato y luego una por tick. Si una
-	// franja se saltea (proceso caído), la siguiente ejecución la detecta
-	// porque SlotActual avanzó y la fila de corridas_diarias no existe:
-	// recorremos desde la última publicada hasta la actual.
-	ultimo := -1
+	// Al arrancar encola sólo la franja actual: las franjas que pasaron con el
+	// proceso caído no se recuperan (quedan sin fila en corridas_diarias, que
+	// en producción es la alarma "franja perdida"). Dentro del proceso sí hay
+	// catch-up: si un tick se atrasa o EncolarFranja tarda más que una franja,
+	// el siguiente tick publica todas las intermedias. Con escala > 1 el
+	// proceso termina al publicar la última franja del día comprimido.
+	ultimaFecha, ultimoSlot := "", -1
 	tick := time.NewTicker(duracionFranja)
 	defer tick.Stop()
 	for {
 		slot, fecha := scheduler.SlotActual(time.Now(), inicio, escala)
-		if slot != ultimo {
-			if _, err := s.EncolarFranja(ctx, fecha, slot); err != nil {
-				slog.Error("encolar", "slot", slot, "err", err)
+		for _, f := range scheduler.FranjasAPublicar(ultimaFecha, ultimoSlot, fecha, slot) {
+			if ctx.Err() != nil {
+				break
 			}
-			ultimo = slot
+			if _, err := s.EncolarFranja(ctx, f.Fecha, f.Slot); err != nil {
+				slog.Error("encolar", "fecha", f.Fecha, "slot", f.Slot, "err", err)
+			}
+			ultimaFecha, ultimoSlot = f.Fecha, f.Slot
+			if escala > 1 && f.Slot == dominio.FranjasPorDia-1 {
+				slog.Info("día comprimido completo", "fecha", f.Fecha)
+				return
+			}
 		}
 		select {
 		case <-ctx.Done():
