@@ -36,8 +36,8 @@ demo:
 	$(COMPOSE) --profile seed build && \
 	$(COMPOSE) up -d --wait postgres localstack api-mock && \
 	$(COMPOSE) run --rm seed && \
-	$(COMPOSE) up -d --scale worker=10 worker scheduler
-	@echo "Día comprimido en curso (~10 min). Seguilo con 'make logs'; el scheduler termina con 'día comprimido completo'. Después: make informe"
+	$(COMPOSE) up -d --scale worker=10 worker scheduler grafana
+	@echo "Día comprimido en curso (~10 min). Tablero en http://localhost:3000; logs con 'make logs'; el scheduler termina con 'día comprimido completo'. Después: make informe"
 
 # ESCALA_TIEMPO debe coincidir con la de la demo. FECHA (opcional) elige el día.
 informe:

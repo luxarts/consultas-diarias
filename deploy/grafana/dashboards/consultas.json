@@ -1,0 +1,136 @@
+{
+  "uid": "consultas-diarias",
+  "title": "Consultas diarias",
+  "tags": ["consultas"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests por minuto",
+      "description": "Requests a la API desde todos los workers, cualquier código de respuesta.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(consultas_http[1m])) * 60",
+          "legendFormat": "requests/min"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 2,
+      "type": "bargauge",
+      "title": "Top 10 proveedores por requests",
+      "description": "Requests acumulados en el rango de tiempo del tablero.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (proveedor) (increase(consultas_http[$__range])))",
+          "legendFormat": "{{proveedor}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "continuous-BlPu" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Respuestas por código HTTP (por minuto)",
+      "description": "0 = error de transporte o timeout, sin respuesta de la API.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(consultas_http[1m])) * 60",
+          "legendFormat": "HTTP {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "HTTP 200" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 400" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 429" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 500" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 503" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "dark-red" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 0" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Latencia promedio por proveedor (últimos 5 min, top 15)",
+      "description": "Promedio de la latencia de la API por proveedor: suma / cantidad del histograma.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(15, sum by (proveedor) (rate(consultas_latencia_segundos_sum[5m])) / sum by (proveedor) (rate(consultas_latencia_segundos_count[5m])))",
+          "legendFormat": "{{proveedor}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3, "color": { "mode": "continuous-GrYlRd" } }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Destino de los mensajes (por minuto)",
+      "description": "ok y fallo_definitivo cierran el mensaje; reintento lo reprograma con backoff; agotado lo manda a la DLQ.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (estado) (rate(consultas_resultado[1m])) * 60",
+          "legendFormat": "{{estado}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0 },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ok" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "fallo_definitivo" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "reintento" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "agotado" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Mensajes en vuelo por worker",
+      "description": "Cada réplica aparece sola al empezar a enviar métricas; el tope por réplica es su concurrencia.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_instance_id) (consultas_en_vuelo)",
+          "legendFormat": "{{service_instance_id}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "right" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

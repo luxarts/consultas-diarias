@@ -15,8 +15,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// Nombres de los instrumentos. El exportador de Prometheus les agrega el
-// sufijo `_total` a los contadores.
+// Nombres de los instrumentos. El colector los publica tal cual (sin sufijos
+// `_total` ni de unidad); el tablero de Grafana los consulta por estos nombres.
 const (
 	NombreHTTP      = "consultas_http"
 	NombreResultado = "consultas_resultado"

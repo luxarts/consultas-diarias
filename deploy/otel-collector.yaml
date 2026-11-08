@@ -1,0 +1,25 @@
+# Colector de métricas: los workers empujan por OTLP (gRPC) a un único nombre
+# de servicio y acá se exponen en formato Prometheus. Es el mismo patrón que
+# un agente Datadog o que ADOT como sidecar en Fargate: los workers escalan
+# sin tocar nada de la observabilidad; en AWS cambia sólo el exportador.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Los nombres se publican tal cual los define el worker.
+    add_metric_suffixes: false
+    # Pasa service_name y service_instance_id como etiquetas para poder
+    # ver métricas por réplica (mensajes en vuelo por worker).
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
