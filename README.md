@@ -129,9 +129,9 @@ Decisiones tomadas al construir la POC que la spec no fija:
 - **Una franja cuyo `Enviar` falla queda en `encolando`** y el scheduler no la reintenta. La spec dice que una franja perdida se detecta por la *ausencia* de fila; eso sólo es cierto si el scheduler nunca la empezó. Es una limitación conocida de la POC: en producción haría falta reclamar las filas en `encolando` más viejas que una franja y volver a publicarlas, cosa que la deduplicación de SQS y la escritura condicional en DynamoDB hacen segura.
 - **Un 2xx con body vacío o que no es JSON es `fallo_definitivo`.** Se asume que la API siempre responde JSON; volver a preguntar no cambiaría el body y bloquearía al proveedor.
 - **La política de medianoche está implementada en el scheduler** (lee `proveedores_estado.pendientes_ayer`), pero en la POC nadie actualiza esa tabla porque el job nocturno quedó fuera de alcance. Está cubierta por tests unitarios con fakes.
-- **Datos de la demo.** El seed genera 100.000 registros sobre 200 proveedores con una distribución Zipf de exponente 1,1. El proveedor más grande concentra alrededor de 21.000 registros, unos 73 por franja.
-- **Latencia del mock en la demo comprimida.** Con `ESCALA_TIEMPO=150` una franja dura 2 s. Si el mock mantuviera su latencia real, el proveedor más grande (~73 mensajes por franja) quedaría saturado por la compresión y no por el diseño. Por eso `deploy/demo.env` baja la latencia del mock a ~2 ms, el equivalente de ~300 ms reales divididos por la escala. El informe compensa la compresión: calcula la saturación como K × L × escala / 86400, que con L medida en el día comprimido equivale a K × L_real / 86400.
-- **Fecha lógica única por corrida en los tests de integración** (`fechaUnica()`). Los ids de deduplicación de SQS FIFO sobreviven a un `PurgeQueue` durante 5 minutos; con una fecha fija, una segunda corrida dentro de esa ventana perdería mensajes en silencio.
+- **Datos de la demo.** El seed genera 100.000 registros sobre 200 proveedores con una distribución Zipf de exponente 1,1. El proveedor más grande concentra alrededor de 21.000 registros, unos 74 por franja.
+- **Latencia del mock en la demo comprimida.** Con `ESCALA_TIEMPO=150` una franja dura 2 s. Si el mock mantuviera su latencia real, el proveedor más grande (~74 mensajes por franja) quedaría saturado por la compresión y no por el diseño. Por eso `deploy/demo.env` baja la latencia del mock a ~2 ms, el equivalente de ~300 ms reales divididos por la escala. El informe compensa la compresión: calcula la saturación como K × L × escala / 86400, que con L medida en el día comprimido equivale a K × L_real / 86400.
+- **Fecha lógica única por corrida en los tests de integración** (`fechaUnica()`). Los ids de deduplicación de SQS FIFO sobreviven 5 minutos aunque los mensajes ya se hayan borrado; con una fecha fija, una segunda corrida dentro de esa ventana perdería mensajes en silencio.
 
 ## 4. El límite que no se puede diseñar
 
@@ -152,7 +152,7 @@ La **política de medianoche** evita que un proveedor saturado acumule deuda sin
 Requisitos: Docker Desktop con Compose v2 y Go 1.26. Todo corre localmente: Postgres en contenedor, SQS y DynamoDB en LocalStack, y un mock de la API en Go. El código del scheduler y del worker es el mismo que correría en AWS; sólo cambia el endpoint del SDK.
 
 ```bash
-make infra             # levanta postgres, localstack y api-mock
+make infra             # levanta postgres, localstack y api-mock y espera a que estén listos
 make test              # unitarios, sin I/O: clasificación, backoff, slots, scheduler y worker con fakes
 make test-integration  # contra el compose: adaptadores, serialización, reintentos, DLQ
 make demo              # día comprimido con 100.000 registros y 10 workers
@@ -164,7 +164,7 @@ make down              # baja todo y borra los volúmenes
 
 El mock lleva un contador de requests en vuelo por proveedor y responde 409 si alguna vez ve dos simultáneos del mismo proveedor. `GET localhost:8080/stats` devuelve `violaciones`, `requests`, `max_en_vuelo_global` (requests simultáneos sumando todos los proveedores) y `max_en_vuelo` por proveedor; `make informe` lo resume. Lo que hay que ver después de cualquier corrida es `violaciones: 0` y ningún proveedor con `max_en_vuelo` mayor a 1: es la verificación empírica de la invariante central, no un argumento.
 
-`make demo` carga el seed, calcula los slots con la misma consulta SQL de la spec y arranca el scheduler con `ESCALA_TIEMPO=150` (una franja de 5 minutos dura 2 s, el día completo ~10 minutos) y 10 réplicas del worker. El mock inyecta errores con las probabilidades de `deploy/demo.env` (500, 503, 429 y 400) para ejercitar reintentos y fallos definitivos. Con `make logs` se ven las franjas encolándose y los workers procesando.
+`make demo` parte siempre de cero: baja el compose borrando volúmenes, reconstruye las imágenes, carga el seed, calcula los slots con la misma consulta SQL de la spec y arranca el scheduler con `ESCALA_TIEMPO=150` (una franja de 5 minutos dura 2 s, el día completo ~10 minutos) y 10 réplicas del worker; si un paso falla, no sigue. El scheduler publica las 288 franjas de un solo día lógico y termina con `día comprimido completo`. El mock inyecta errores con las probabilidades de `deploy/demo.env` (500, 503, 429 y 400) para ejercitar reintentos y fallos definitivos. Con `make logs` se ven las franjas encolándose y los workers procesando.
 
 ## 6. Mapeo POC → producción
 
@@ -181,11 +181,12 @@ Las interfaces `Cola`, `Fuente` y `Resultados` en `internal/` son el borde entre
 
 ## 7. Resultados de la demo
 
-La demo se corre desde cero:
+La demo se corre desde cero (el propio `make demo` borra el estado anterior):
 
 ```bash
-make down && make demo
-# esperar ~10 minutos, lo que dura el día comprimido
+make demo
+# esperar ~10 minutos, hasta que el scheduler loguee "día comprimido completo"
+# y los workers vacíen la cola (make logs)
 make informe
 ```
 
@@ -193,7 +194,7 @@ make informe
 
 Un detalle para leer la saturación: L es la latencia medida dentro del día comprimido, donde el mock responde en ~2 ms. El informe ya la lleva a tiempo real multiplicando por `ESCALA_TIEMPO`, que el target `make informe` fija en 150, la misma escala de la demo.
 
-La salida medida de la corrida queda registrada en `docs/demo-resultados.md`.
+Ejecución pendiente: la demo todavía no se corrió de punta a punta en este repositorio, así que no hay números medidos que mostrar acá. Lo mismo vale para `make test-integration`: compila y pasa `go vet`, pero todavía no se ejecutó contra el compose. Cuando se corra la demo, la salida textual de `make informe` se registra en docs/demo-resultados.md y su resumen en esta sección.
 
 ## 8. Qué quedó fuera
 
