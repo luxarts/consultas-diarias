@@ -31,7 +31,10 @@ const duracionFranja = 24 * time.Hour / dominio.FranjasPorDia
 // SlotActual devuelve la franja y la fecha lógica para el instante t.
 // Con escala 1 usa el reloj real. Con escala > 1 el día se comprime y
 // arranca en inicio: t = inicio es slot 0 del día de inicio.
+// En modo comprimido se asume t >= inicio. El día del sistema es UTC.
 func SlotActual(t, inicio time.Time, escala float64) (int, string) {
+	t = t.UTC()
+	inicio = inicio.UTC()
 	if escala <= 1 {
 		desdeMedianoche := t.Sub(t.Truncate(24 * time.Hour))
 		return int(desdeMedianoche / duracionFranja), t.Format("2006-01-02")

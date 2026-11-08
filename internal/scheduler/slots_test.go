@@ -61,3 +61,12 @@ func TestSlotActualComprimido(t *testing.T) {
 		t.Fatalf("segundo día comprimido: got %d %s", slot, fecha)
 	}
 }
+
+func TestSlotActualNormalizaAUTC(t *testing.T) {
+	zona := time.FixedZone("UTC-5", -5*3600)
+	// 23:30 en UTC-5 es 04:30 UTC del día siguiente.
+	slot, fecha := SlotActual(time.Date(2026, 11, 8, 23, 30, 0, 0, zona), time.Time{}, 1)
+	if slot != 54 || fecha != "2026-11-09" {
+		t.Fatalf("got %d %s, quiero 54 2026-11-09", slot, fecha)
+	}
+}
