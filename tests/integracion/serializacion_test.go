@@ -32,7 +32,7 @@ func leerStats(t *testing.T, base string) stats {
 	return s
 }
 
-// Un proveedor, 20 mensajes, 5 workers con concurrencia 4 cada uno.
+// Dos proveedores, 40 mensajes (20 cada uno), 5 workers con concurrencia 4 cada uno.
 // La API mock responde 409 si recibe dos requests simultáneos del mismo
 // proveedor; el test pasa sólo si eso nunca ocurre.
 func TestNuncaDosRequestsAlMismoProveedor(t *testing.T) {

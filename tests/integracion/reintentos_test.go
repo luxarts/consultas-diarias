@@ -8,10 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
-
 	"consultas-diarias/internal/apiclient"
 	"consultas-diarias/internal/dominio"
 	"consultas-diarias/internal/worker"
@@ -73,6 +69,11 @@ func TestAgotadoTerminaEnDLQ(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fecha := fechaUnica()
+	// El conteo inicial hace la prueba repetible aunque la DLQ no esté vacía.
+	inicial := e.mensajesVisibles(ctx, e.DLQURL)
+	if inicial < 0 {
+		t.Fatal("no se pudo leer la DLQ")
+	}
 	enviarUno(t, e, 103, "siempre-503-"+fecha, "503,503,503,503,503,503", fecha)
 	lanzarWorker(ctx, e, 600)
 	esperar(t, 60*time.Second, func() bool {
@@ -83,13 +84,10 @@ func TestAgotadoTerminaEnDLQ(t *testing.T) {
 	if r.Intentos != dominio.IntentosMax {
 		t.Fatalf("intentos = %d", r.Intentos)
 	}
-	// Tras el quinto intento el mensaje queda en vuelo hasta que vence el
-	// visibility timeout (60 s); recién entonces SQS lo mueve a la DLQ.
-	esperar(t, 90*time.Second, func() bool {
-		out, err := e.SQS.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-			QueueUrl:       aws.String(e.DLQURL),
-			AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximateNumberOfMessages},
-		})
-		return err == nil && out.Attributes["ApproximateNumberOfMessages"] == "1"
+	// Tras el quinto intento el worker pone la visibilidad en 0: en la
+	// siguiente recepción SQS ve que superó maxReceiveCount y lo mueve a la
+	// DLQ, sin esperar los 60 s del visibility timeout.
+	esperar(t, 60*time.Second, func() bool {
+		return e.mensajesVisibles(ctx, e.DLQURL) >= inicial+1
 	})
 }
