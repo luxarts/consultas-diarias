@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: consultas
+    ports: ["5432:5432"]
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d consultas"]
+      interval: 2s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs,dynamodb
+      DEBUG: 0
+    ports: ["4566:4566"]
+    volumes:
+      - ./localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name consultas.fifo"]
+      interval: 3s
+      retries: 30
+
+  api-mock:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: api-mock
+    environment:
+      PUERTO: "8080"
+      LATENCIA_BASE_MS: ${LATENCIA_BASE_MS:-200}
+      LATENCIA_VAR_MS: ${LATENCIA_VAR_MS:-100}
+      PROB_500: ${PROB_500:-0}
+      PROB_503: ${PROB_503:-0}
+      PROB_429: ${PROB_429:-0}
+      PROB_TIMEOUT: ${PROB_TIMEOUT:-0}
+      PROB_400: ${PROB_400:-0}
+      MAX_CONCURRENCIA_PROVEEDOR: ${MAX_CONCURRENCIA_PROVEEDOR:-1}
+    ports: ["8080:8080"]
+
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: worker
+    environment: &aws
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      COLA_URL: http://localstack:4566/000000000000/consultas.fifo
+      TABLA_RESULTADOS: resultados
+      API_BASE_URL: http://api-mock:8080
+      CONCURRENCIA: "10"
+      ESCALA_TIEMPO: ${ESCALA_TIEMPO:-1}
+    depends_on:
+      localstack: { condition: service_healthy }
+      api-mock: { condition: service_started }
+
+  scheduler:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: scheduler
+    environment:
+      <<: *aws
+      POSTGRES_URL: postgres://app:app@postgres:5432/consultas
+      ESCALA_TIEMPO: ${ESCALA_TIEMPO:-1}
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+  seed:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: seed
+    profiles: ["seed"]
+    environment:
+      POSTGRES_URL: postgres://app:app@postgres:5432/consultas
+      REGISTROS: "100000"
+      PROVEEDORES: "200"
+    depends_on:
+      postgres: { condition: service_healthy }
