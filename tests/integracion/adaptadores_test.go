@@ -23,22 +23,22 @@ func TestSQSIdaYVuelta(t *testing.T) {
 	if err := e.Cola.Enviar(ctx, msgs); err != nil {
 		t.Fatal(err)
 	}
-	got, err := e.Cola.Recibir(ctx, 10)
+	got, err := e.Cola.Recibir(ctx, 1)
 	if err != nil || len(got) != 1 || got[0].RegistroID != 1 || got[0].Intento != 1 {
-		t.Fatalf("FIFO debía entregar sólo el primero del grupo: %+v, %v", got, err)
+		t.Fatalf("debía entregar el primero del grupo con intento 1: %+v, %v", got, err)
 	}
 	if err := e.Cola.CambiarVisibilidad(ctx, got[0].Recibo, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(1500 * time.Millisecond)
-	otra, _ := e.Cola.Recibir(ctx, 10)
+	otra, _ := e.Cola.Recibir(ctx, 1)
 	if len(otra) != 1 || otra[0].RegistroID != 1 || otra[0].Intento != 2 {
 		t.Fatalf("tras expirar debía volver el mismo con intento 2: %+v", otra)
 	}
 	if err := e.Cola.Borrar(ctx, otra[0].Recibo); err != nil {
 		t.Fatal(err)
 	}
-	tercera, _ := e.Cola.Recibir(ctx, 10)
+	tercera, _ := e.Cola.Recibir(ctx, 1)
 	if len(tercera) != 1 || tercera[0].RegistroID != 2 {
 		t.Fatalf("debía llegar el segundo: %+v", tercera)
 	}

@@ -136,30 +136,29 @@ sequenceDiagram
         S->>PG: UPDATE corridas_diarias SET estado='encolada'
     end
 
-    loop long polling
-        W->>Q: ReceiveMessage(max 10, wait 20 s)
-        Q-->>W: mensajes, a lo sumo uno por proveedor
-        par por cada mensaje
-            W->>API: request con timeout 30 s
-            API-->>W: respuesta o error
-            W->>W: clasificar(resp, err)
-            alt exito
-                W->>D: PutItem(estado=ok) condicional
-                W->>Q: DeleteMessage
-            else no reintentable
-                W->>D: PutItem(estado=fallo_definitivo)
-                W->>Q: DeleteMessage
-            else reintentable, intentos < 5
-                W->>Q: ChangeMessageVisibility(backoff)
-            else reintentable, intento 5
-                W->>D: PutItem(estado=agotado)
-                Note over Q: SQS mueve el mensaje a la DLQ
-            end
+    loop long polling, en cada goroutine del worker
+        W->>Q: ReceiveMessage(max 1, wait 20 s)
+        Q-->>W: un mensaje, el grupo del proveedor queda bloqueado mientras esté en vuelo
+        W->>API: request con timeout 30 s
+        API-->>W: respuesta o error
+        W->>W: clasificar(resp, err)
+        alt exito
+            W->>D: PutItem(estado=ok) condicional
+            W->>Q: DeleteMessage
+        else no reintentable
+            W->>D: PutItem(estado=fallo_definitivo)
+            W->>Q: DeleteMessage
+        else reintentable, intentos < 5
+            W->>Q: ChangeMessageVisibility(backoff)
+        else reintentable, intento 5
+            W->>D: PutItem(estado=agotado)
+            W->>Q: ChangeMessageVisibility(0)
+            Note over Q: en la siguiente recepción SQS lo mueve a la DLQ
         end
     end
 ```
 
-Mientras un mensaje de un proveedor está en vuelo o esperando backoff, SQS FIFO no entrega ningún otro mensaje de ese grupo. Esa es la garantía que resuelve el requisito de no concurrencia.
+Mientras un mensaje de un proveedor está en vuelo o esperando backoff, SQS FIFO no entrega ningún otro mensaje de ese grupo a ningún consumidor. Esa es la garantía que resuelve el requisito de no concurrencia. Tiene un matiz: un mismo `ReceiveMessage` con `max > 1` sí puede devolver varios mensajes consecutivos del mismo grupo. Por eso cada goroutine del worker pide un mensaje por vez y lo termina antes de pedir el siguiente; el costo es un `ReceiveMessage` por consulta, despreciable a 1M por día.
 
 ## 5. Distribución horaria y capacidad
 
@@ -245,7 +244,7 @@ Un 429 de la API se reintenta y además alimenta la métrica de saturación: ind
 | 4 | 30 min |
 | 5 | A la DLQ |
 
-Jitter de ±20 % en cada espera. El contador de intentos lo provee SQS en `ApproximateReceiveCount`; no hace falta estado propio. Al quinto fallo el worker escribe `estado = agotado` en DynamoDB y deja que SQS mueva el mensaje a la DLQ.
+Jitter de ±20 % en cada espera. El contador de intentos lo provee SQS en `ApproximateReceiveCount`; no hace falta estado propio. Al quinto fallo el worker escribe `estado = agotado` en DynamoDB y pone la visibilidad del mensaje en 0: en la siguiente recepción SQS ve que superó `maxReceiveCount` y lo mueve a la DLQ, sin esperar los 60 s del visibility timeout con el proveedor bloqueado.
 
 ### 6.3 Efecto sobre la serialización
 

@@ -90,6 +90,9 @@ func TestProcesarAgotado(t *testing.T) {
 	if len(c.Borrados) != 0 {
 		t.Fatal("al agotar no se borra: SQS lo mueve a la DLQ por maxReceiveCount")
 	}
+	if len(c.Visibilidades) != 1 || c.Visibilidades[0] != 0 || c.Pendientes() != 1 {
+		t.Fatalf("al agotar debe volver a la cola con visibilidad 0: %v, pendientes %d", c.Visibilidades, c.Pendientes())
+	}
 }
 
 func TestProcesarTimeoutEsReintentable(t *testing.T) {

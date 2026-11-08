@@ -9,14 +9,18 @@ import (
 	"consultas-diarias/internal/dominio"
 )
 
-// Fake es una cola en memoria con semántica FIFO por proveedor.
+// Fake es una cola en memoria que imita la semántica de grupos de SQS FIFO:
+// un receive puede devolver varios mensajes consecutivos del mismo proveedor
+// (hasta max), y mientras alguno de un proveedor está en vuelo ningún otro
+// receive entrega mensajes de ese proveedor.
 type Fake struct {
-	mu        sync.Mutex
-	pendiente []dominio.MensajeRecibido
-	enVuelo   map[string]dominio.MensajeRecibido // recibo -> mensaje
-	seq       int
-	Borrados  []int64 // registro_id de los mensajes borrados, en orden
-	Enviados  int
+	mu            sync.Mutex
+	pendiente     []dominio.MensajeRecibido
+	enVuelo       map[string]dominio.MensajeRecibido // recibo -> mensaje
+	seq           int
+	Borrados      []int64         // registro_id de los mensajes borrados, en orden
+	Visibilidades []time.Duration // esperas pedidas en CambiarVisibilidad, en orden
+	Enviados      int
 }
 
 func NuevaFake() *Fake {
@@ -33,6 +37,10 @@ func (f *Fake) Enviar(_ context.Context, msgs []dominio.Mensaje) error {
 	return nil
 }
 
+// Recibir recorre los proveedores en el orden de su primer mensaje pendiente
+// y, para cada uno que no tenga mensajes en vuelo, entrega sus mensajes en
+// orden hasta completar max. Como SQS, intenta llenar el lote con el mismo
+// grupo antes de pasar a otro.
 func (f *Fake) Recibir(_ context.Context, max int) ([]dominio.MensajeRecibido, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -40,16 +48,35 @@ func (f *Fake) Recibir(_ context.Context, max int) ([]dominio.MensajeRecibido, e
 	for _, m := range f.enVuelo {
 		bloqueados[m.Proveedor] = true
 	}
+	var orden []string
+	porProveedor := map[string][]int{} // proveedor -> índices en pendiente
+	for i, m := range f.pendiente {
+		if _, ok := porProveedor[m.Proveedor]; !ok {
+			orden = append(orden, m.Proveedor)
+		}
+		porProveedor[m.Proveedor] = append(porProveedor[m.Proveedor], i)
+	}
+	entregado := map[int]bool{}
 	var salida []dominio.MensajeRecibido
-	var resto []dominio.MensajeRecibido
-	for _, m := range f.pendiente {
-		if len(salida) < max && !bloqueados[m.Proveedor] {
+	for _, prov := range orden {
+		if bloqueados[prov] {
+			continue
+		}
+		for _, i := range porProveedor[prov] {
+			if len(salida) >= max {
+				break
+			}
+			m := f.pendiente[i]
 			f.seq++
 			m.Recibo = fmt.Sprintf("r%d", f.seq)
 			f.enVuelo[m.Recibo] = m
-			bloqueados[m.Proveedor] = true
+			entregado[i] = true
 			salida = append(salida, m)
-		} else {
+		}
+	}
+	resto := f.pendiente[:0:0]
+	for i, m := range f.pendiente {
+		if !entregado[i] {
 			resto = append(resto, m)
 		}
 	}
@@ -69,7 +96,10 @@ func (f *Fake) Borrar(_ context.Context, recibo string) error {
 	return nil
 }
 
-func (f *Fake) CambiarVisibilidad(_ context.Context, recibo string, _ time.Duration) error {
+// CambiarVisibilidad devuelve el mensaje a la cabeza de la cola de inmediato,
+// sin esperar: el fake no modela el paso del tiempo. La espera pedida queda
+// registrada en Visibilidades.
+func (f *Fake) CambiarVisibilidad(_ context.Context, recibo string, espera time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.enVuelo[recibo]
@@ -77,6 +107,7 @@ func (f *Fake) CambiarVisibilidad(_ context.Context, recibo string, _ time.Durat
 		return fmt.Errorf("recibo desconocido: %s", recibo)
 	}
 	delete(f.enVuelo, recibo)
+	f.Visibilidades = append(f.Visibilidades, espera)
 	m.Recibo = ""
 	m.Intento++
 	f.pendiente = append([]dominio.MensajeRecibido{m}, f.pendiente...)
@@ -88,4 +119,11 @@ func (f *Fake) Pendientes() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.pendiente)
+}
+
+// EnVuelo devuelve cuántos mensajes están entregados y sin borrar.
+func (f *Fake) EnVuelo() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.enVuelo)
 }

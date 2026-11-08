@@ -15,7 +15,10 @@ import (
 )
 
 // SQS implementa Cola sobre una cola FIFO. El MessageGroupId es el
-// proveedor, lo que delega en SQS la serialización por proveedor.
+// proveedor, lo que delega en SQS la serialización por proveedor: mientras un
+// mensaje de un grupo está en vuelo, ningún otro consumidor recibe mensajes de
+// ese grupo. Ojo: un mismo ReceiveMessage con max > 1 sí puede devolver varios
+// mensajes consecutivos del mismo grupo; por eso el worker pide de a uno.
 type SQS struct {
 	cliente *sqs.Client
 	url     string
@@ -38,7 +41,7 @@ func (s *SQS) Enviar(ctx context.Context, msgs []dominio.Mensaje) error {
 				Id:                     aws.String(strconv.Itoa(j)),
 				MessageBody:            aws.String(string(cuerpo)),
 				MessageGroupId:         aws.String(m.Proveedor),
-				MessageDeduplicationId: aws.String(fmt.Sprintf("%d-%s", m.RegistroID, m.Fecha)),
+				MessageDeduplicationId: aws.String(fmt.Sprintf("%d:%s", m.RegistroID, m.Fecha)),
 			})
 		}
 		out, err := s.cliente.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{
@@ -90,12 +93,12 @@ func (s *SQS) Borrar(ctx context.Context, recibo string) error {
 }
 
 func (s *SQS) CambiarVisibilidad(ctx context.Context, recibo string, espera time.Duration) error {
-	segundos := int32(espera / time.Second)
-	if segundos < 1 {
-		segundos = 1
-	}
-	if segundos > 43200 {
-		segundos = 43200
+	// Una espera de 0 devuelve el mensaje a la cola de inmediato (la usa el
+	// worker al agotar intentos para que SQS lo mueva ya a la DLQ). Una espera
+	// positiva menor a un segundo, como un backoff escalado, se redondea a 1 s.
+	var segundos int32
+	if espera > 0 {
+		segundos = int32(min(max(espera/time.Second, 1), 43200))
 	}
 	_, err := s.cliente.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(s.url),

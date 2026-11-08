@@ -23,14 +23,15 @@ type Procesador struct {
 	Escala     float64
 }
 
-// Procesar nunca deja un mensaje en limbo: lo borra, lo reprograma o lo
-// deja vencer para que SQS lo mueva a la DLQ.
+// Procesar nunca deja un mensaje en limbo: lo borra, lo reprograma con
+// backoff o, al agotar intentos, lo devuelve con visibilidad 0 para que SQS
+// lo mueva a la DLQ en la siguiente recepción.
 func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) error {
 	inicio := p.Ahora()
 	ctxAPI, cancel := context.WithTimeout(ctx, dominio.TimeoutHTTP)
 	defer cancel()
 	status, body, err := p.API.Consultar(ctxAPI, m.Proveedor, m.Endpoint, m.Body)
-	latencia := time.Since(inicio).Milliseconds()
+	fin := p.Ahora()
 
 	res := dominio.Resultado{
 		RegistroID:  m.RegistroID,
@@ -38,8 +39,8 @@ func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) er
 		Proveedor:   m.Proveedor,
 		HTTPStatus:  status,
 		Intentos:    m.Intento,
-		LatenciaMs:  latencia,
-		ProcesadoEn: p.Ahora(),
+		LatenciaMs:  fin.Sub(inicio).Milliseconds(),
+		ProcesadoEn: fin,
 	}
 
 	switch Clasificar(status, body, err) {
@@ -62,7 +63,10 @@ func (p *Procesador) Procesar(ctx context.Context, m dominio.MensajeRecibido) er
 				return err
 			}
 			slog.Warn("agotado", "registro", m.RegistroID, "proveedor", m.Proveedor)
-			return nil // no borramos: SQS lo manda a la DLQ
+			// No se borra: con visibilidad 0 vuelve a la cola ya mismo y, como
+			// superó maxReceiveCount, SQS lo mueve a la DLQ en vez de entregarlo.
+			// Sin esto el proveedor quedaría bloqueado 60 s hasta que venza.
+			return p.Cola.CambiarVisibilidad(ctx, m.Recibo, 0)
 		}
 		slog.Info("reintento", "registro", m.RegistroID, "intento", m.Intento, "espera", espera)
 		return p.Cola.CambiarVisibilidad(ctx, m.Recibo, p.escalar(espera))
@@ -84,7 +88,7 @@ func (p *Procesador) guardar(ctx context.Context, m dominio.MensajeRecibido, res
 		return nil
 	}
 	espera, _ := Backoff(m.Intento, p.Rnd)
-	if espera == 0 {
+	if espera == 0 { // intento 5: Backoff no da espera, se usa la del primer intento
 		espera = 30 * time.Second
 	}
 	_ = p.Cola.CambiarVisibilidad(ctx, m.Recibo, p.escalar(espera))

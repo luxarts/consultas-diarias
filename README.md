@@ -83,30 +83,29 @@ sequenceDiagram
         S->>PG: UPDATE corridas_diarias SET estado='encolada'
     end
 
-    loop long polling
-        W->>Q: ReceiveMessage(max 10, wait 20 s)
-        Q-->>W: mensajes, a lo sumo uno por proveedor
-        par por cada mensaje
-            W->>API: request con timeout 30 s
-            API-->>W: respuesta o error
-            W->>W: clasificar(resp, err)
-            alt exito
-                W->>D: PutItem(estado=ok) condicional
-                W->>Q: DeleteMessage
-            else no reintentable
-                W->>D: PutItem(estado=fallo_definitivo)
-                W->>Q: DeleteMessage
-            else reintentable, intentos < 5
-                W->>Q: ChangeMessageVisibility(backoff)
-            else reintentable, intento 5
-                W->>D: PutItem(estado=agotado)
-                Note over Q: SQS mueve el mensaje a la DLQ
-            end
+    loop long polling, en cada goroutine del worker
+        W->>Q: ReceiveMessage(max 1, wait 20 s)
+        Q-->>W: un mensaje, el grupo del proveedor queda bloqueado mientras esté en vuelo
+        W->>API: request con timeout 30 s
+        API-->>W: respuesta o error
+        W->>W: clasificar(resp, err)
+        alt exito
+            W->>D: PutItem(estado=ok) condicional
+            W->>Q: DeleteMessage
+        else no reintentable
+            W->>D: PutItem(estado=fallo_definitivo)
+            W->>Q: DeleteMessage
+        else reintentable, intentos < 5
+            W->>Q: ChangeMessageVisibility(backoff)
+        else reintentable, intento 5
+            W->>D: PutItem(estado=agotado)
+            W->>Q: ChangeMessageVisibility(0)
+            Note over Q: en la siguiente recepción SQS lo mueve a la DLQ
         end
     end
 ```
 
-La parte de arriba es idempotente por construcción: la PK `(fecha, slot)` de `corridas_diarias` impide publicar dos veces la misma franja, y el `MessageDeduplicationId` cubre el reenvío de un lote que en realidad había llegado. La parte de abajo descansa en una garantía de SQS FIFO: mientras un mensaje de un grupo está en vuelo o esperando su backoff, ningún otro mensaje de ese grupo se entrega. Por eso un mismo `ReceiveMessage` trae a lo sumo un mensaje por proveedor y el worker puede procesarlos en paralelo sin violar la serialización. El reintento no necesita estado propio: el número de intento es `ApproximateReceiveCount` y el backoff es la visibilidad del mensaje.
+La parte de arriba es idempotente por construcción: la PK `(fecha, slot)` de `corridas_diarias` impide publicar dos veces la misma franja, y el `MessageDeduplicationId` cubre el reenvío de un lote que en realidad había llegado. La parte de abajo descansa en una garantía de SQS FIFO: mientras un mensaje de un grupo está en vuelo o esperando su backoff, ningún otro consumidor recibe mensajes de ese grupo. La garantía no alcanza a un mismo `ReceiveMessage`: con `max > 1`, SQS puede devolver varios mensajes consecutivos del mismo grupo en un lote. Por eso cada worker corre `concurrencia` goroutines independientes y cada una pide **un** mensaje, lo procesa hasta borrarlo o reprogramarlo y recién entonces pide el siguiente; así nunca hay dos requests simultáneos al mismo proveedor. El reintento no necesita estado propio: el número de intento es `ApproximateReceiveCount` y el backoff es la visibilidad del mensaje. Al agotar los 5 intentos el worker guarda `agotado` y pone la visibilidad en 0, con lo que SQS lo mueve a la DLQ en la siguiente recepción en lugar de dejar al proveedor bloqueado los 60 s del visibility timeout.
 
 ## 3. Decisiones clave
 
@@ -124,6 +123,7 @@ La parte de arriba es idempotente por construcción: la PK `(fecha, slot)` de `c
 Decisiones tomadas al construir la POC que la spec no fija:
 
 - **El día del sistema es UTC.** Franja, fecha lógica y TTL se calculan en UTC; `SlotActual` normaliza sus entradas a UTC antes de calcular.
+- **Cada receive pide un mensaje.** Cada goroutine del worker hace `ReceiveMessage` con `MaxNumberOfMessages = 1` y long polling de 20 s. Pedir lotes ahorraría llamadas pero podría traer dos mensajes del mismo proveedor juntos. El costo es aproximadamente un `ReceiveMessage` por consulta: un millón de llamadas por día, despreciable frente al resto.
 - **Sin catch-up.** Si el proceso scheduler está caído durante una franja, esa franja no se publica después. Queda como fila ausente en `corridas_diarias`, que en producción es la alarma "franja perdida".
 - **Una franja cuyo `Enviar` falla queda en `encolando`** y el scheduler no la reintenta. La spec dice que una franja perdida se detecta por la *ausencia* de fila; eso sólo es cierto si el scheduler nunca la empezó. Es una limitación conocida de la POC: en producción haría falta reclamar las filas en `encolando` más viejas que una franja y volver a publicarlas, cosa que la deduplicación de SQS y la escritura condicional en DynamoDB hacen segura.
 - **Un 2xx con body vacío o que no es JSON es `fallo_definitivo`.** Se asume que la API siempre responde JSON; volver a preguntar no cambiaría el body y bloquearía al proveedor.
@@ -208,8 +208,7 @@ Explícitamente no implementado en la POC, descrito en la spec con los valores p
 
 - **Reclamar franjas en `encolando`.** El scheduler debería buscar filas en `encolando` más viejas que una franja y volver a publicarlas. Es seguro gracias a la deduplicación de SQS y a la escritura condicional en DynamoDB, y cierra el hueco de una franja cuyo envío falló a mitad de camino.
 - **Catch-up de franjas perdidas.** Al arrancar, recorrer desde la última franja publicada del día hasta la actual y publicar las que falten, en lugar de depender sólo de la alarma.
-- **`Recibir` acotado por capacidad libre.** Hoy el worker pide `concurrencia` mensajes en cada ciclo aunque tenga goroutines ocupadas; los que esperan turno consumen visibility timeout sin procesarse. Debería pedir sólo tantos como lugares libres tenga.
-- **Mensajes venenosos en `Recibir`.** Un body que no deserializa hace fallar todo el lote recibido, y los demás mensajes del lote suman intentos sin culpa. Lo correcto es aislar el mensaje malformado, mandarlo a la DLQ y procesar el resto.
+- **Mensajes venenosos en `Recibir`.** Un body que no deserializa hace fallar el receive. Como cada receive trae un solo mensaje, sólo afecta a ese mensaje: vuelve a la cola al vencer su visibility timeout, bloquea a su proveedor 60 s por intento y llega a la DLQ tras cinco recepciones. Lo correcto es mandarlo a la DLQ de inmediato, o guardarlo como `fallo_definitivo`, sin hacerle pagar esos cinco minutos a su proveedor.
 
 ## 9. Ciclo de vida y plan
 
